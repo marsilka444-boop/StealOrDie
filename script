@@ -1,0 +1,1123 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
+local UserInputService = game:GetService("UserInputService")
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- 🔥 ПРОВЕРКА ИГРЫ ПО ID
+local TARGET_PLACE_ID = 119925538689885 
+
+local function isCorrectGame()
+    return game.PlaceId == TARGET_PLACE_ID
+end
+
+if not isCorrectGame() then
+    local errGui = Instance.new("ScreenGui")
+    errGui.Name = "WrongGameError"
+    errGui.Parent = game:GetService("CoreGui") or Players.LocalPlayer:WaitForChild("PlayerGui")
+    
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.fromOffset(300, 100)
+    frame.Position = UDim2.new(0.5, -150, 0.5, -50)
+    frame.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    frame.Parent = errGui
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+    
+    local text = Instance.new("TextLabel")
+    text.Size = UDim2.new(1, -20, 1, -20)
+    text.Position = UDim2.new(0, 10, 0, 10)
+    text.BackgroundTransparency = 1
+    text.Text = "ERROR: This script is ONLY for 'Steal or Die'!"
+    text.TextColor3 = Color3.new(1,1,1)
+    text.Font = Enum.Font.GothamBlack
+    text.TextScaled = true
+    text.Parent = frame
+    
+    return
+end
+
+-- ================= ОСНОВНОЙ КОД =================
+local LocalPlayer = Players.LocalPlayer
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local LOOT_FOLDER_NAME = "MyLoot"
+local VALID_KEY = "KEY_QeloraHubKHTCUSFCKJUAFWK" 
+local TG_LINK = "https://t.me/+UZZ-BqZHi143OTQ6"
+
+local SND_CLICK = "rbxassetid://6895079853"
+local SND_SUCCESS = "rbxassetid://10765253708"
+local SND_ERROR = "rbxassetid://10765253654"
+local SND_TOGGLE = "rbxassetid://12221967"
+
+local espPlayersList = {}
+local espLootList = {}
+local espExitsList = {}
+local espClosetsList = {}
+local espEntityList = {}
+local currentSortMode = "none" 
+local cachedLootItems = {}
+local isSettingsOpen = false
+local shadowsEnabled = true
+local targetLootItem = nil 
+local isCollecting = false 
+local shadowConnection = nil
+
+local isPlayerEspEnabled = false
+local isLootEspEnabled = false
+local isInstantPromptEnabled = false
+local isEntityEspEnabled = false
+local isExitEspEnabled = false
+local isClosetEspEnabled = false
+
+local function getChar()
+    local char = LocalPlayer.Character
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hrp and hum and hum.Health > 0 then return char, hrp, hum end
+    end
+    return nil
+end
+
+local function getObjPos(obj)
+    if obj:IsA("Model") then 
+        return obj.PrimaryPart and obj.PrimaryPart.Position or obj:GetPivot().Position
+    else 
+        return obj.Position 
+    end
+end
+
+local function unstuckCharacter()
+    local char, hrp, hum = getChar()
+    if hum then
+        hum.PlatformStand = false
+        hum:ChangeState(Enum.HumanoidStateType.Running)
+        hum.WalkSpeed = 16
+        hum.JumpPower = 50
+    end
+end
+
+local function isExitDoor(obj)
+    if not obj:IsA("Model") and not obj:IsA("BasePart") then return false end
+    if obj.Name ~= "Door" and not CollectionService:HasTag(obj, "Door") then return false end
+    return obj:FindFirstChild("ExitPoint", true) ~= nil
+end
+
+local function getItemPrice(item)
+    local price = "?"
+    local success, val = pcall(function() 
+        return item:GetAttribute("Price") or item:GetAttribute("Value") or item:GetAttribute("Worth") 
+    end)
+    if success and val then price = tostring(val) end
+    for _, child in pairs(item:GetChildren()) do
+        if child.Name == "Price" or child.Name == "Value" or child.Name == "Cost" then
+            price = tostring(child.Value)
+            break
+        end
+    end
+    return price
+end
+
+local function getNumericPrice(item)
+    local priceStr = getItemPrice(item)
+    local num = tonumber(string.match(priceStr, "%d+%.?%d*"))
+    return num or 0
+end
+
+local function getPriceColor(price)
+    local alpha = math.clamp(price / 2000, 0, 1) 
+    return Color3.fromRGB(255, 255, 255):Lerp(Color3.fromRGB(255, 255, 0), alpha)
+end
+
+local function toggleInstantPrompt(state)
+    isInstantPromptEnabled = state
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") then
+            if not obj:GetAttribute("OrigHold") then
+                obj:SetAttribute("OrigHold", obj.HoldDuration)
+            end
+            obj.HoldDuration = isInstantPromptEnabled and 0 or obj:GetAttribute("OrigHold")
+        end
+    end
+end
+
+Workspace.DescendantAdded:Connect(function(desc)
+    if desc:IsA("ProximityPrompt") and isInstantPromptEnabled then
+        if not desc:GetAttribute("OrigHold") then
+            desc:SetAttribute("OrigHold", desc.HoldDuration)
+        end
+        desc.HoldDuration = 0
+    end
+end)
+
+local function createViewport(parent, item)
+    local vp = Instance.new("ViewportFrame", parent)
+    vp.Size = UDim2.new(0, 45, 1, -6)
+    vp.Position = UDim2.new(0, 3, 0, 3)
+    vp.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    vp.BackgroundTransparency = 0.2
+    vp.Ambient = Color3.fromRGB(150, 150, 150)
+    Instance.new("UICorner", vp).CornerRadius = UDim.new(0, 6)
+    
+    local clone = item:Clone()
+    for _, desc in pairs(clone:GetDescendants()) do
+        if desc:IsA("Script") or desc:IsA("ProximityPrompt") or desc:IsA("ClickDetector") or desc:IsA("Highlight") then
+            desc:Destroy()
+        end
+    end
+    local model = clone
+    if not clone:IsA("Model") then
+        model = Instance.new("Model")
+        clone.Parent = model
+        model.PrimaryPart = clone
+    end
+    model.Parent = vp
+    local cam = Instance.new("Camera", vp)
+    vp.CurrentCamera = cam
+    
+    local cframe, size = model:GetBoundingBox()
+    local dist = size.Magnitude * 0.55 
+    local rotatedCFrame = cframe * CFrame.Angles(0, math.rad(45), 0) * CFrame.Angles(math.rad(20), 0, 0)
+    
+    cam.CFrame = CFrame.new(rotatedCFrame.Position + Vector3.new(dist, dist, dist), cframe.Position)
+end
+
+local function clearList(list)
+    for _, v in pairs(list) do if v then v:Destroy() end end
+    return {}
+end
+
+local function updatePlayerESP()
+    espPlayersList = clearList(espPlayersList)
+    if not isPlayerEspEnabled then return end
+
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            if p:GetAttribute("IsEntity") ~= true and p.Character:GetAttribute("IsEntity") ~= true then
+                local hl = Instance.new("Highlight", p.Character)
+                hl.FillColor = Color3.fromRGB(0, 255, 255)
+                hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                table.insert(espPlayersList, hl)
+            end
+        end
+    end
+end
+
+local function updateEntityESP()
+    espEntityList = clearList(espEntityList)
+    if not isEntityEspEnabled then return end
+    
+    for _, obj in ipairs(Workspace:GetChildren()) do
+        if string.sub(obj.Name, 1, 4) == "The " or obj.Name == "EntityEyes" then
+            local hl = Instance.new("Highlight", obj)
+            hl.FillColor = Color3.fromRGB(255, 0, 0)
+            hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+            hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            table.insert(espEntityList, hl)
+        end
+    end
+
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            if p:GetAttribute("IsEntity") == true or p.Character:GetAttribute("IsEntity") == true then
+                local hl = Instance.new("Highlight", p.Character)
+                hl.FillColor = Color3.fromRGB(255, 0, 0)
+                hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                table.insert(espEntityList, hl)
+            end
+        end
+    end
+end
+
+local function updateLootESP()
+    espLootList = clearList(espLootList)
+    if not isLootEspEnabled and not targetLootItem then return end
+    
+    local folder = Workspace:FindFirstChild(LOOT_FOLDER_NAME) or Workspace:FindFirstChild(LOOT_FOLDER_NAME, true)
+    if not folder then return end
+
+    for _, item in ipairs(folder:GetChildren()) do
+        if isLootEspEnabled or item == targetLootItem then
+            local isTarget = (targetLootItem == item)
+            local hl = Instance.new("Highlight", item)
+            
+            if isTarget then
+                hl.FillColor = Color3.fromRGB(255, 105, 180)
+            else
+                hl.FillColor = Color3.fromRGB(255, 215, 0)
+            end
+            hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+            table.insert(espLootList, hl)
+
+            local price = getNumericPrice(item)
+            if price > 0 then
+                local part = item:IsA("Model") and item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart")
+                if part then
+                    local bb = Instance.new("BillboardGui", part)
+                    bb.Size = UDim2.fromOffset(100, 30)
+                    bb.StudsOffset = Vector3.new(0, 3, 0)
+                    bb.AlwaysOnTop = true
+
+                    local txt = Instance.new("TextLabel", bb)
+                    txt.Size = UDim2.fromScale(1, 1)
+                    txt.BackgroundTransparency = 1
+                    txt.Text = "$" .. price
+                    txt.Font = Enum.Font.GothamBlack
+                    txt.TextSize = 16
+                    txt.TextColor3 = getPriceColor(price)
+                    txt.TextStrokeTransparency = 0
+                    txt.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+
+                    table.insert(espLootList, bb)
+                end
+            end
+        end
+    end
+end
+
+local function updateExitESP()
+    espExitsList = clearList(espExitsList)
+    if not isExitEspEnabled then return end
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if isExitDoor(obj) then
+            local hl = Instance.new("Highlight", obj)
+            hl.FillColor = Color3.fromRGB(50, 255, 50)
+            hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+            table.insert(espExitsList, hl)
+        end
+    end
+end
+
+local function updateClosetESP()
+    espClosetsList = clearList(espClosetsList)
+    if not isClosetEspEnabled then return end
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj.Name == "Closet" and (obj:IsA("BasePart") or obj:IsA("Model")) then
+            local hl = Instance.new("Highlight", obj)
+            hl.FillColor = Color3.fromRGB(200, 100, 255) 
+            hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+            table.insert(espClosetsList, hl)
+        end
+    end
+end
+
+local PurpleDark = Color3.fromRGB(75, 0, 130)
+local PurpleMain = Color3.fromRGB(138, 43, 226)
+local PurpleLight = Color3.fromRGB(180, 130, 255)
+local BlackBg = Color3.fromRGB(15, 15, 20)
+local DarkGrey = Color3.fromRGB(30, 30, 35)
+local White = Color3.fromRGB(255, 255, 255)
+local Red = Color3.fromRGB(255, 60, 60)
+local Green = Color3.fromRGB(50, 255, 50)
+
+local parentGui = playerGui
+if gethui then parentGui = gethui() end
+for _, v in pairs(parentGui:GetChildren()) do
+    if v.Name == "QeloraSteal" then v:Destroy() end
+end
+
+local gui = Instance.new("ScreenGui", parentGui)
+gui.Name = "QeloraSteal"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 999
+
+local function playSound(id)
+    task.spawn(function()
+        local snd = Instance.new("Sound", gui)
+        snd.SoundId = id
+        snd.Volume = 0.5
+        pcall(function() snd:Play() end)
+        task.wait(3)
+        if snd then snd:Destroy() end
+    end)
+end
+
+-- 🔥 КУЛДАУН 10 СЕКУНД
+local function spamInteract(targetObj, statusLbl, actionName)
+    if isCollecting then 
+        statusLbl.Text = "Status: Cooldown! Wait 10s..."
+        return 
+    end
+    if not targetObj or not targetObj.Parent then 
+        playSound(SND_ERROR)
+        return 
+    end
+    
+    isCollecting = true
+    task.spawn(function()
+        local char, hrp = getChar()
+        if not hrp then isCollecting = false; return end
+        
+        local originalCFrame = hrp.CFrame
+        local targetPos = getObjPos(targetObj) + Vector3.new(0, 3, 0)
+        
+        statusLbl.Text = "Status: " .. actionName .. "..."
+        
+        local useBtn = nil
+        for _, obj in pairs(playerGui:GetDescendants()) do
+            if (obj:IsA("TextButton") or obj:IsA("ImageButton")) and obj.Visible then
+                if string.find(string.lower(obj.Name), "use") or string.find(string.lower(obj.Name), "hide") or (obj:IsA("TextButton") and string.find(string.lower(obj.Text), "использовать")) then
+                    useBtn = obj
+                    break
+                end
+            end
+        end
+
+        local prompt = targetObj:FindFirstChildWhichIsA("ProximityPrompt", true)
+        if prompt and not isInstantPromptEnabled then pcall(function() prompt.HoldDuration = 0 end) end
+
+        for i = 1, 5 do
+            hrp.CFrame = CFrame.new(targetPos)
+            
+            if prompt then pcall(function() fireproximityprompt(prompt) end) end
+            if useBtn then
+                pcall(function() useBtn:Activate() end)
+                pcall(function() useBtn.MouseButton1Click:Fire() end)
+            end
+            
+            task.wait(0.1)
+        end
+        
+        statusLbl.Text = "Status: Returning..."
+        hrp.CFrame = originalCFrame
+        
+        for i = 1, 3 do
+            task.wait(0.1)
+            unstuckCharacter()
+        end
+        
+        playSound(SND_SUCCESS)
+        task.wait(10) -- 10 СЕКУНД КД
+        isCollecting = false
+        statusLbl.Text = "Status: Ready"
+    end)
+end
+
+local keyFrame = Instance.new("Frame", gui)
+keyFrame.Size = UDim2.fromOffset(300, 250)
+keyFrame.Position = UDim2.new(0.5, -150, 0.5, -125)
+keyFrame.BackgroundColor3 = BlackBg
+keyFrame.BorderSizePixel = 0
+keyFrame.Active = true
+keyFrame.Draggable = true
+Instance.new("UICorner", keyFrame).CornerRadius = UDim.new(0, 12)
+Instance.new("UIStroke", keyFrame).Color = PurpleMain
+
+local keyTitle = Instance.new("TextLabel", keyFrame)
+keyTitle.Size = UDim2.new(1, 0, 0, 40)
+keyTitle.BackgroundColor3 = PurpleMain
+keyTitle.Text = "Authentication Required"
+keyTitle.TextColor3 = White
+keyTitle.Font = Enum.Font.GothamBlack
+keyTitle.TextSize = 16
+Instance.new("UICorner", keyTitle).CornerRadius = UDim.new(0, 12)
+
+local keyInput = Instance.new("TextBox", keyFrame)
+keyInput.Size = UDim2.new(1, -40, 0, 35)
+keyInput.Position = UDim2.new(0, 20, 0, 80)
+keyInput.BackgroundColor3 = DarkGrey
+keyInput.Text = ""
+keyInput.PlaceholderText = "Enter Key..."
+keyInput.TextColor3 = White
+keyInput.Font = Enum.Font.GothamBold
+keyInput.TextSize = 12
+Instance.new("UICorner", keyInput).CornerRadius = UDim.new(0, 6)
+
+local keyBtn = Instance.new("TextButton", keyFrame)
+keyBtn.Size = UDim2.new(1, -40, 0, 35)
+keyBtn.Position = UDim2.new(0, 20, 0, 130)
+keyBtn.BackgroundColor3 = PurpleMain
+keyBtn.Text = "LOGIN"
+keyBtn.TextColor3 = White
+keyBtn.Font = Enum.Font.GothamBlack
+keyBtn.AutoButtonColor = false
+Instance.new("UICorner", keyBtn).CornerRadius = UDim.new(0, 6)
+
+local tgBtn = Instance.new("TextButton", keyFrame)
+tgBtn.Size = UDim2.new(1, -40, 0, 35)
+tgBtn.Position = UDim2.new(0, 20, 0, 175)
+tgBtn.BackgroundColor3 = DarkGrey
+tgBtn.Text = "COPY TG LINK (GET KEY)"
+tgBtn.TextColor3 = Color3.fromRGB(50, 255, 255)
+tgBtn.Font = Enum.Font.GothamBold
+tgBtn.AutoButtonColor = false
+Instance.new("UICorner", tgBtn).CornerRadius = UDim.new(0, 6)
+Instance.new("UIStroke", tgBtn).Color = Color3.fromRGB(50, 255, 255)
+
+tgBtn.MouseButton1Click:Connect(function()
+    if setclipboard then
+        setclipboard(TG_LINK)
+        playSound(SND_CLICK)
+        tgBtn.Text = "LINK COPIED!"
+        tgBtn.TextColor3 = Green
+        task.wait(2)
+        tgBtn.Text = "COPY TG LINK (GET KEY)"
+        tgBtn.TextColor3 = Color3.fromRGB(50, 255, 255)
+    end
+end)
+
+local toggleBtn = Instance.new("TextButton", gui)
+toggleBtn.Size = UDim2.fromOffset(75, 75)
+toggleBtn.Position = UDim2.fromOffset(20, 120)
+toggleBtn.BackgroundColor3 = BlackBg
+toggleBtn.Text = "" 
+toggleBtn.BorderSizePixel = 0
+toggleBtn.AutoButtonColor = false
+toggleBtn.Visible = false
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(1, 0)
+
+local outerStroke = Instance.new("UIStroke", toggleBtn)
+outerStroke.Color = PurpleMain
+outerStroke.Thickness = 2.5
+
+local innerRing = Instance.new("Frame", toggleBtn)
+innerRing.Size = UDim2.new(0.75, 0, 0.75, 0)
+innerRing.Position = UDim2.new(0.125, 0, 0.125, 0)
+innerRing.BackgroundTransparency = 1
+innerRing.Active = false
+Instance.new("UICorner", innerRing).CornerRadius = UDim.new(1, 0)
+Instance.new("UIStroke", innerRing).Color = PurpleLight
+
+local dotContainer = Instance.new("Frame", toggleBtn)
+dotContainer.Size = UDim2.fromOffset(53, 53)
+dotContainer.BackgroundTransparency = 1
+dotContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+dotContainer.Position = UDim2.fromScale(0.5, 0.5)
+dotContainer.Active = false
+
+for i = 1, 4 do
+    local dot = Instance.new("Frame", dotContainer)
+    dot.Size = UDim2.fromOffset(4, 4)
+    dot.BackgroundColor3 = PurpleMain
+    dot.Active = false
+    Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+    if i == 1 then dot.Position = UDim2.new(0.5, -2, 0, 0)
+    elseif i == 2 then dot.Position = UDim2.new(0.5, -2, 1, -4)
+    elseif i == 3 then dot.Position = UDim2.new(0, 0, 0.5, -2)
+    elseif i == 4 then dot.Position = UDim2.new(1, -4, 0.5, -2) end
+end
+
+TweenService:Create(dotContainer, TweenInfo.new(10, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {Rotation = 360}):Play()
+
+local qText = Instance.new("TextLabel", toggleBtn)
+qText.Size = UDim2.new(1, 0, 1, 0)
+qText.BackgroundTransparency = 1
+qText.Text = "Q"
+qText.TextColor3 = White
+qText.Font = Enum.Font.GothamBlack
+qText.TextSize = 34 
+qText.ZIndex = 2
+qText.Active = false
+qText.TextStrokeTransparency = 0.5
+
+local main = Instance.new("Frame", gui)
+main.Size = UDim2.fromOffset(320, 400)
+main.Position = UDim2.new(0.5, -160, 0.5, -200)
+main.BackgroundColor3 = BlackBg
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.Visible = false
+main.ClipsDescendants = true
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 12)
+Instance.new("UIStroke", main).Color = PurpleMain
+
+local header = Instance.new("Frame", main)
+header.Size = UDim2.new(1, 0, 0, 40)
+header.BackgroundColor3 = White
+header.BorderSizePixel = 0
+Instance.new("UIGradient", header).Color = ColorSequence.new{ColorSequenceKeypoint.new(0, PurpleMain), ColorSequenceKeypoint.new(1, PurpleDark)}
+
+local title = Instance.new("TextLabel", header)
+title.Size = UDim2.new(1, -40, 1, 0)
+title.Position = UDim2.new(0, 15, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "Qelora Hub"
+title.TextColor3 = White
+title.Font = Enum.Font.GothamBlack
+title.TextSize = 16
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.ZIndex = 2
+
+local closeBtn = Instance.new("TextButton", header)
+closeBtn.Size = UDim2.fromOffset(30, 30)
+closeBtn.Position = UDim2.new(1, -38, 0.5, -15)
+closeBtn.BackgroundColor3 = Red
+closeBtn.Text = "X"
+closeBtn.TextColor3 = White
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.AutoButtonColor = false
+closeBtn.ZIndex = 3
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
+
+local tabFrame = Instance.new("Frame", main)
+tabFrame.Size = UDim2.new(1, -20, 0, 30)
+tabFrame.Position = UDim2.new(0, 10, 0, 45)
+tabFrame.BackgroundTransparency = 1
+
+local function createTab(name, posX, sizeX)
+    local btn = Instance.new("TextButton", tabFrame)
+    btn.Size = UDim2.new(sizeX, -4, 1, 0)
+    btn.Position = UDim2.new(posX, 0, 0, 0)
+    btn.BackgroundColor3 = DarkGrey
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(150, 150, 150)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 11
+    btn.BorderSizePixel = 0
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    return btn
+end
+
+local btnMainTab = createTab("MAIN", 0, 0.33)
+local btnVisualsTab = createTab("VISUALS", 0.33, 0.34)
+local btnLootTab = createTab("LOOT", 0.67, 0.33)
+
+local function createContentFrame()
+    local f = Instance.new("Frame", main)
+    f.Size = UDim2.new(1, 0, 1, -85)
+    f.Position = UDim2.new(0, 0, 0, 85)
+    f.BackgroundTransparency = 1
+    f.Visible = false
+    return f
+end
+
+local contentMain = createContentFrame()
+local contentVisuals = createContentFrame()
+local contentLoot = createContentFrame()
+
+local function createActionBtn(parent, text, yPos, callback)
+    local frame = Instance.new("Frame", parent)
+    frame.Size = UDim2.new(1, -30, 0, 35)
+    frame.Position = UDim2.new(0, 15, 0, yPos)
+    frame.BackgroundColor3 = White
+    frame.BorderSizePixel = 0
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
+
+    local grad = Instance.new("UIGradient", frame)
+    grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, PurpleMain), ColorSequenceKeypoint.new(1, PurpleDark)}
+    grad.Rotation = 45
+    
+    local btn = Instance.new("TextButton", frame)
+    btn.Size = UDim2.new(1, 0, 1, 0)
+    btn.BackgroundTransparency = 1
+    btn.Text = text
+    btn.TextColor3 = White
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 12
+    btn.AutoButtonColor = false
+    
+    btn.MouseButton1Click:Connect(function()
+        playSound(SND_CLICK)
+        local orig = frame.Size
+        local tween = TweenService:Create(frame, TweenInfo.new(0.1), {Size = UDim2.new(orig.X.Scale, orig.X.Offset - 4, orig.Y.Scale, orig.Y.Offset - 4)})
+        local tween2 = TweenService:Create(frame, TweenInfo.new(0.1), {Size = orig})
+        tween:Play()
+        tween.Completed:Connect(function() tween2:Play() end)
+        callback(btn, grad)
+    end)
+    return btn
+end
+
+local statusLbl = Instance.new("TextLabel", main)
+statusLbl.Size = UDim2.new(1, -30, 0, 20)
+statusLbl.Position = UDim2.new(0, 15, 1, -25)
+statusLbl.BackgroundTransparency = 1
+statusLbl.Text = "Status: Ready"
+statusLbl.TextColor3 = Color3.fromRGB(150, 150, 150)
+statusLbl.Font = Enum.Font.GothamMedium
+statusLbl.TextSize = 11
+statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+-- MAIN TAB
+local btnTpExit = createActionBtn(contentMain, "TP TO NEAREST EXIT", 10, function(btn)
+    local closestExit = nil
+    local minDist = math.huge
+    local char, hrp = getChar()
+    if not hrp then return end
+    
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if isExitDoor(obj) then
+            local exitPoint = obj:FindFirstChild("ExitPoint", true)
+            local pos = getObjPos(exitPoint or obj)
+            local dist = (pos - hrp.Position).Magnitude
+            if dist < minDist then
+                minDist = dist
+                closestExit = obj
+            end
+        end
+    end
+    
+    if closestExit then
+        spamInteract(closestExit, statusLbl, "Hacking Exit")
+        btn.Text = "TELEPORTING!"
+        task.wait(1)
+        btn.Text = "TP TO NEAREST EXIT"
+    else
+        playSound(SND_ERROR)
+        btn.Text = "NO EXITS FOUND!"
+        task.wait(1.5)
+        btn.Text = "TP TO NEAREST EXIT"
+    end
+end)
+
+local btnHideCloset = createActionBtn(contentMain, "HIDE IN CLOSET", 55, function(btn)
+    local closestCloset = nil
+    local minDist = math.huge
+    local char, hrp = getChar()
+    if not hrp then return end
+    
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj.Name == "Closet" and (obj:IsA("BasePart") or obj:IsA("Model")) then
+            local pos = getObjPos(obj)
+            local dist = (pos - hrp.Position).Magnitude
+            if dist < minDist then
+                minDist = dist
+                closestCloset = obj
+            end
+        end
+    end
+    
+    if closestCloset then
+        spamInteract(closestCloset, statusLbl, "Hiding")
+        btn.Text = "HIDING!"
+        task.wait(1)
+        btn.Text = "HIDE IN CLOSET"
+    else
+        playSound(SND_ERROR)
+        btn.Text = "NO CLOSETS FOUND!"
+        task.wait(1.5)
+        btn.Text = "HIDE IN CLOSET"
+    end
+end)
+
+local btnInstantPrompt = createActionBtn(contentMain, "INSTANT PROMPT: OFF", 100, function(btn, grad)
+    playSound(SND_TOGGLE)
+    isInstantPromptEnabled = not isInstantPromptEnabled
+    if isInstantPromptEnabled then
+        btn.Text = "INSTANT PROMPT: ON"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, Green), ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 150, 0))}
+        toggleInstantPrompt(true)
+    else
+        btn.Text = "INSTANT PROMPT: OFF"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, PurpleMain), ColorSequenceKeypoint.new(1, PurpleDark)}
+        toggleInstantPrompt(false)
+    end
+end)
+
+-- VISUALS TAB
+local btnEspPlayers = createActionBtn(contentVisuals, "PLAYER ESP: OFF", 10, function(btn, grad)
+    playSound(SND_TOGGLE)
+    isPlayerEspEnabled = not isPlayerEspEnabled
+    if isPlayerEspEnabled then
+        btn.Text = "PLAYER ESP: ON"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, Green), ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 150, 0))}
+        updatePlayerESP()
+    else
+        btn.Text = "PLAYER ESP: OFF"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, PurpleMain), ColorSequenceKeypoint.new(1, PurpleDark)}
+        espPlayersList = clearList(espPlayersList)
+    end
+end)
+
+local btnEspEntity = createActionBtn(contentVisuals, "ENTITY ESP: OFF", 55, function(btn, grad)
+    playSound(SND_TOGGLE)
+    isEntityEspEnabled = not isEntityEspEnabled
+    if isEntityEspEnabled then
+        btn.Text = "ENTITY ESP: ON"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, Green), ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 150, 0))}
+        updateEntityESP()
+    else
+        btn.Text = "ENTITY ESP: OFF"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, PurpleMain), ColorSequenceKeypoint.new(1, PurpleDark)}
+        espEntityList = clearList(espEntityList)
+    end
+end)
+
+local btnEspLoot = createActionBtn(contentVisuals, "LOOT ESP: OFF", 100, function(btn, grad)
+    playSound(SND_TOGGLE)
+    isLootEspEnabled = not isLootEspEnabled
+    if isLootEspEnabled then
+        btn.Text = "LOOT ESP: ON"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, Green), ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 150, 0))}
+        updateLootESP()
+    else
+        btn.Text = "LOOT ESP: OFF"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, PurpleMain), ColorSequenceKeypoint.new(1, PurpleDark)}
+        targetLootItem = nil
+        updateLootESP()
+    end
+end)
+
+local btnEspExits = createActionBtn(contentVisuals, "EXIT ESP: OFF", 145, function(btn, grad)
+    playSound(SND_TOGGLE)
+    isExitEspEnabled = not isExitEspEnabled
+    if isExitEspEnabled then
+        btn.Text = "EXIT ESP: ON"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, Green), ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 150, 0))}
+        updateExitESP()
+    else
+        btn.Text = "EXIT ESP: OFF"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, PurpleMain), ColorSequenceKeypoint.new(1, PurpleDark)}
+        espExitsList = clearList(espExitsList)
+    end
+end)
+
+local btnEspClosets = createActionBtn(contentVisuals, "CLOSET ESP: OFF", 190, function(btn, grad)
+    playSound(SND_TOGGLE)
+    isClosetEspEnabled = not isClosetEspEnabled
+    if isClosetEspEnabled then
+        btn.Text = "CLOSET ESP: ON"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, Green), ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 150, 0))}
+        updateClosetESP()
+    else
+        btn.Text = "CLOSET ESP: OFF"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, PurpleMain), ColorSequenceKeypoint.new(1, PurpleDark)}
+        espClosetsList = clearList(espClosetsList)
+    end
+end)
+
+local btnShadows = createActionBtn(contentVisuals, "DISABLE SHADOWS", 235, function(btn, grad)
+    playSound(SND_TOGGLE)
+    shadowsEnabled = not shadowsEnabled
+    if not shadowsEnabled then
+        btn.Text = "ENABLE SHADOWS"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 200, 50)), ColorSequenceKeypoint.new(1, Color3.fromRGB(200, 150, 0))}
+        
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 100000
+        Lighting.ClockTime = 14 
+        
+        for _, obj in ipairs(Lighting:GetDescendants()) do
+            if obj:IsA("Atmosphere") or obj:IsA("Sky") or obj:IsA("BloomEffect") or obj:IsA("ColorCorrectionEffect") or obj:IsA("SunRaysEffect") or obj:IsA("DepthOfFieldEffect") then
+                obj:Destroy()
+            end
+        end
+        
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("BasePart") then obj.CastShadow = false end
+        end
+        for _, obj in ipairs(Lighting:GetDescendants()) do
+            if obj:IsA("Light") then obj.Shadows = false end
+        end
+        
+        if shadowConnection then shadowConnection:Disconnect() end
+        shadowConnection = Workspace.DescendantAdded:Connect(function(desc)
+            if desc:IsA("BasePart") and not shadowsEnabled then desc.CastShadow = false end
+        end)
+    else
+        btn.Text = "DISABLE SHADOWS"
+        grad.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, PurpleMain), ColorSequenceKeypoint.new(1, PurpleDark)}
+        
+        Lighting.GlobalShadows = true
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("BasePart") then obj.CastShadow = true end
+        end
+        if shadowConnection then shadowConnection:Disconnect() end
+    end
+end)
+
+-- LOOT TAB
+local gearBtn = Instance.new("TextButton", contentLoot)
+gearBtn.Size = UDim2.fromOffset(30, 30)
+gearBtn.Position = UDim2.new(1, -45, 0, 5)
+gearBtn.BackgroundTransparency = 1
+gearBtn.Text = ""
+gearBtn.AutoButtonColor = false
+
+local gearContainer = Instance.new("Frame", gearBtn)
+gearContainer.Size = UDim2.fromOffset(24, 24)
+gearContainer.Position = UDim2.new(0.5, -12, 0.5, -12)
+gearContainer.BackgroundTransparency = 1
+gearContainer.Active = false
+
+for i = 1, 8 do
+    local angle = math.rad(i * 45)
+    local tooth = Instance.new("Frame", gearContainer)
+    tooth.Size = UDim2.fromOffset(6, 6)
+    tooth.AnchorPoint = Vector2.new(0.5, 0.5)
+    tooth.Position = UDim2.new(0.5 + (0.38 * math.cos(angle)), 0, 0.5 + (0.38 * math.sin(angle)), 0)
+    tooth.BackgroundColor3 = PurpleMain
+    tooth.Active = false
+    Instance.new("UICorner", tooth).CornerRadius = UDim.new(0, 2)
+end
+
+local gearBase = Instance.new("Frame", gearContainer)
+gearBase.Size = UDim2.fromOffset(16, 16)
+gearBase.Position = UDim2.new(0.5, -8, 0.5, -8)
+gearBase.BackgroundColor3 = PurpleMain
+gearBase.Active = false
+Instance.new("UICorner", gearBase).CornerRadius = UDim.new(1, 0)
+
+local gearHole = Instance.new("Frame", gearContainer)
+gearHole.Size = UDim2.fromOffset(6, 6)
+gearHole.Position = UDim2.new(0.5, -3, 0.5, -3)
+gearHole.BackgroundColor3 = DarkGrey
+gearHole.Active = false
+Instance.new("UICorner", gearHole).CornerRadius = UDim.new(1, 0)
+
+TweenService:Create(gearContainer, TweenInfo.new(4, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {Rotation = 360}):Play()
+
+local settingsMenu = Instance.new("Frame", contentLoot)
+settingsMenu.Size = UDim2.fromOffset(120, 100) 
+settingsMenu.Position = UDim2.new(1, -135, 0, 40)
+settingsMenu.BackgroundColor3 = DarkGrey
+settingsMenu.Visible = false
+settingsMenu.ZIndex = 5
+Instance.new("UICorner", settingsMenu).CornerRadius = UDim.new(0, 8)
+
+local function createSettingsBtn(text, yPos, callback)
+    local btn = Instance.new("TextButton", settingsMenu)
+    btn.Size = UDim2.new(1, -10, 0, 25)
+    btn.Position = UDim2.new(0, 5, 0, yPos)
+    btn.BackgroundColor3 = Color3.fromRGB(45, 45, 50)
+    btn.Text = text
+    btn.TextColor3 = White
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 11
+    btn.AutoButtonColor = false
+    btn.ZIndex = 6
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+    
+    btn.MouseButton1Click:Connect(function()
+        playSound(SND_CLICK)
+        settingsMenu.Visible = false
+        callback()
+        updateLootList()
+    end)
+end
+
+createSettingsBtn("REFRESH", 5, function() currentSortMode = "none" end)
+createSettingsBtn("LOW -> HIGH", 35, function() currentSortMode = "asc" end)
+createSettingsBtn("HIGH -> LOW", 65, function() currentSortMode = "desc" end)
+
+gearBtn.MouseButton1Click:Connect(function()
+    playSound(SND_CLICK)
+    isSettingsOpen = not isSettingsOpen
+    settingsMenu.Visible = isSettingsOpen
+end)
+
+local noteLbl = Instance.new("TextLabel", contentLoot)
+noteLbl.Size = UDim2.new(1, -30, 0, 20)
+noteLbl.Position = UDim2.new(0, 15, 0, 25)
+noteLbl.BackgroundTransparency = 1
+noteLbl.Text = "⚠️ WARNING: Auto-Pickup may fail on 1st try!"
+noteLbl.TextColor3 = Color3.fromRGB(255, 50, 50)
+noteLbl.Font = Enum.Font.GothamBold
+noteLbl.TextSize = 11
+noteLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local listFrame = Instance.new("ScrollingFrame", contentLoot)
+listFrame.Size = UDim2.new(1, -30, 0, 230)
+listFrame.Position = UDim2.new(0, 15, 0, 45)
+listFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+listFrame.ScrollBarThickness = 4
+listFrame.ScrollBarImageColor3 = PurpleMain
+Instance.new("UICorner", listFrame).CornerRadius = UDim.new(0, 8)
+local listLayout = Instance.new("UIListLayout", listFrame)
+listLayout.Padding = UDim.new(0, 5)
+
+function updateLootList()
+    for _, child in pairs(listFrame:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+    
+    local folder = Workspace:FindFirstChild(LOOT_FOLDER_NAME) or Workspace:FindFirstChild(LOOT_FOLDER_NAME, true)
+    if not folder then
+        statusLbl.Text = "Status: No Loot Found (Lobby?)"
+        return
+    end
+    
+    cachedLootItems = {}
+    for _, item in ipairs(folder:GetChildren()) do
+        table.insert(cachedLootItems, item)
+    end
+    
+    if currentSortMode == "asc" then
+        table.sort(cachedLootItems, function(a, b) return getNumericPrice(a) < getNumericPrice(b) end)
+    elseif currentSortMode == "desc" then
+        table.sort(cachedLootItems, function(a, b) return getNumericPrice(a) > getNumericPrice(b) end)
+    end
+    
+    for _, item in ipairs(cachedLootItems) do
+        local card = Instance.new("Frame", listFrame)
+        card.Size = UDim2.new(1, -5, 0, 50)
+        card.BackgroundColor3 = DarkGrey
+        Instance.new("UICorner", card).CornerRadius = UDim.new(0, 6)
+        
+        createViewport(card, item)
+        
+        local nameLbl = Instance.new("TextLabel", card)
+        nameLbl.Size = UDim2.new(1, -100, 0, 25)
+        nameLbl.Position = UDim2.new(0, 55, 0, 0)
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.Text = item.Name
+        nameLbl.TextColor3 = White
+        nameLbl.Font = Enum.Font.GothamBold
+        nameLbl.TextSize = 13
+        nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+        
+        local priceStr = getItemPrice(item)
+        local priceLbl = Instance.new("TextLabel", card)
+        priceLbl.Size = UDim2.new(1, -100, 0, 20)
+        priceLbl.Position = UDim2.new(0, 55, 0, 25)
+        priceLbl.BackgroundTransparency = 1
+        priceLbl.Text = "Price: $" .. priceStr
+        priceLbl.TextColor3 = Color3.fromRGB(50, 255, 50)
+        priceLbl.Font = Enum.Font.GothamMedium
+        priceLbl.TextSize = 12
+        priceLbl.TextXAlignment = Enum.TextXAlignment.Left
+        
+        local getBtn = Instance.new("TextButton", card)
+        getBtn.Size = UDim2.new(0, 70, 0, 30)
+        getBtn.Position = UDim2.new(1, -75, 0.5, -15)
+        getBtn.BackgroundColor3 = Green
+        getBtn.Text = "GET"
+        getBtn.TextColor3 = White
+        getBtn.Font = Enum.Font.GothamBold
+        getBtn.TextSize = 12
+        getBtn.AutoButtonColor = false
+        Instance.new("UICorner", getBtn).CornerRadius = UDim.new(0, 6)
+        
+        getBtn.MouseButton1Click:Connect(function()
+            playSound(SND_CLICK)
+            targetLootItem = item 
+            updateLootESP()
+            spamInteract(item, statusLbl, "Looting " .. item.Name)
+        end)
+    end
+    
+    listFrame.CanvasSize = UDim2.new(0, 0, 0, #cachedLootItems * 55)
+    statusLbl.Text = "Status: Found " .. #cachedLootItems .. " items"
+end
+
+local function togglePanel()
+    playSound(SND_CLICK)
+    if not main.Visible then
+        main.Visible = true
+        main.Size = UDim2.fromOffset(0, 0)
+        main.Position = UDim2.new(0.5, 0, 0.5, 0)
+        TweenService:Create(main, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.fromOffset(320, 400), Position = UDim2.new(0.5, -160, 0.5, -200)}):Play()
+    else
+        local tween = TweenService:Create(main, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Size = UDim2.fromOffset(0,0), Position = UDim2.new(0.5, 0, 0.5, 0)})
+        tween:Play()
+        tween.Completed:Connect(function() main.Visible = false end)
+    end
+end
+
+local function setTab(activeTab, activeContent)
+    for _, tab in pairs({btnMainTab, btnVisualsTab, btnLootTab}) do
+        if tab == activeTab then
+            TweenService:Create(tab, TweenInfo.new(0.2), {BackgroundColor3 = PurpleMain, TextColor3 = White}):Play()
+        else
+            TweenService:Create(tab, TweenInfo.new(0.2), {BackgroundColor3 = DarkGrey, TextColor3 = Color3.fromRGB(150, 150, 150)}):Play()
+        end
+    end
+
+    for _, content in pairs({contentMain, contentVisuals, contentLoot}) do
+        if content == activeContent then
+            content.Visible = true
+            content.Position = UDim2.new(0, 30, 0, 85)
+            TweenService:Create(content, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.new(0, 0, 0, 85)}):Play()
+        else
+            content.Visible = false
+        end
+    end
+end
+
+local dragging = false
+local dragInput, dragStart, startPos
+toggleBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = toggleBtn.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+
+toggleBtn.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        toggleBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+toggleBtn.MouseButton1Click:Connect(function() if not dragging then togglePanel() end end)
+closeBtn.MouseButton1Click:Connect(function() togglePanel() end)
+btnMainTab.MouseButton1Click:Connect(function() setTab(btnMainTab, contentMain) end)
+btnVisualsTab.MouseButton1Click:Connect(function() setTab(btnVisualsTab, contentVisuals) end)
+btnLootTab.MouseButton1Click:Connect(function() setTab(btnLootTab, contentLoot); updateLootList() end)
+
+setTab(btnMainTab, contentMain)
+
+local function checkKey()
+    if keyInput.Text == VALID_KEY then
+        playSound(SND_SUCCESS)
+        keyFrame.Visible = false
+        toggleBtn.Visible = true
+        statusLbl.Text = "Status: Key Accepted!"
+    else
+        playSound(SND_ERROR)
+        keyInput.Text = ""
+        keyInput.PlaceholderText = "INVALID KEY!"
+        task.wait(1)
+    end
+end
+
+keyBtn.MouseButton1Click:Connect(checkKey)
+keyInput.FocusLost:Connect(function(enterPressed) if enterPressed then checkKey() end end)
+
+-- 🔥 СОБЫТИЯ (Обновление ESP)
+Players.PlayerAdded:Connect(function() task.wait(1.5) if isPlayerEspEnabled then updatePlayerESP() end end)
+Players.PlayerRemoving:Connect(function() task.wait(1.5) if isPlayerEspEnabled then updatePlayerESP() end end)
+
+Workspace.ChildAdded:Connect(function(child)
+    if string.sub(child.Name, 1, 4) == "The " or child.Name == "EntityEyes" then
+        if isEntityEspEnabled then updateEntityESP() end
+    end
+end)
+
+-- 🔥 АВТО-ОБНОВЛЕНИЕ КАЖДЫЕ 10 СЕКУНД (Игроки + Монстры)
+task.spawn(function()
+    while task.wait(10) do
+        if isPlayerEspEnabled then pcall(updatePlayerESP) end
+        if isEntityEspEnabled then pcall(updateEntityESP) end
+    end
+end)
+
+local function watchPlayer(p)
+    p:GetAttributeChangedSignal("IsEntity"):Connect(function()
+        if isEntityEspEnabled then updateEntityESP() end
+        if isPlayerEspEnabled then updatePlayerESP() end
+    end)
+    if p.Character then
+        p.Character:GetAttributeChangedSignal("IsEntity"):Connect(function()
+            if isEntityEspEnabled then updateEntityESP() end
+            if isPlayerEspEnabled then updatePlayerESP() end
+        end)
+    end
+    p.CharacterAdded:Connect(function(char)
+        task.wait(1)
+        char:GetAttributeChangedSignal("IsEntity"):Connect(function()
+            if isEntityEspEnabled then updateEntityESP() end
+            if isPlayerEspEnabled then updatePlayerESP() end
+        end)
+        if isPlayerEspEnabled then updatePlayerESP() end
+    end)
+end
+
+for _, p in pairs(Players:GetPlayers()) do watchPlayer(p) end
+Players.PlayerAdded:Connect(watchPlayer)
+
+print(">>> Qelora Hub (Key Restored & 10s Cooldown) Loaded!")
